@@ -19,15 +19,14 @@
 
 $softmax(x_i) = \dfrac{\exp(x_i)}{\sum_1^N \exp(x_j)}$ . If values of vector are large, $\exp$ will explode. Therefore softmax is unsafe. This is how we make it safer 
 
-
-$$
+```math
 \begin{align*}
 \frac{e^{x_i}}{\sum_{j=1}^N e^{x_j}} = \frac{c \cdot e^{x_i}}{\sum_{j=1}^N c \cdot e^{x_j}} 
 &= \frac{e^{\log(c)} \cdot e^{x_i}}{\sum_{j=1}^N e^{\log(c)} \cdot e^{x_j}} 
 &= \frac{e^{\log(c) + x_i}}{\sum_{j=1}^N e^{\log(c) + x_j}}
 &= \frac{e^{x_i- k}}{\sum_{j=1}^N e^{x_j - k}}
 \end{align*}
-$$
+```
 where $k = -\log{(c)}$ \
 So we can *sneak in* a constant in the exponential to decrease its argument and make it safe. \
 We will choose $k = \max_i{(x_i)}$ \ 
@@ -69,14 +68,14 @@ Consider an array `[3,2,5,1]`. To calculate `l` we would go like
 - $m_3 = \max(3, 5) = 5, l_3 = l_2 + e^{5-5} = e^{3-3} + e^{2-3} + e^{5-5}$ $\rightarrow$  *Gone wrong* $\rightarrow$  *we wanted* $e^{3-5} + e^{2-5} + e^{5-5}$ 
 
 To make a correction, we can use a correction factor $e^{3-5}$ i.e. $e^{prev~max - current~max}$
-$$
+```math
 \begin{align*}
     l_3 &= l_2 * e^{3-5} + e^{5-5}  \\
     &= l_2 * e^{3-5} + e^{5-5} \\
     &= (e^{3-3} + e^{2-3}) * e^{3-5} + e^{5-5} \\
     &= (e^{3-5} + e^{2-5}) + e^{5-5}
 \end{align*}
-$$
+```
 
 - $m_4 = \max(5, 1) = 5, l_4 = l_3 * e^{5-5} + e^{1-5}$ $\rightarrow$ this is good
 
@@ -99,13 +98,13 @@ Fuse the first two for-loops into one
     - $l_1 = 0 * e^{-\infty} + e^{x_1-x_1} = \sum_{j=1}^N e^{x_i - x_{max}}$
 2. Assume it holds for vector of size $N$, show it holds for vector of size $N+1$
     - $m_{N+1} = \max(m_N, x_{N+1}) = \max_i{x_i} = x_{max}$ <br>
-$$
+```math
 \begin{align*}
     l_{N+1} &= l_N * e^{m_N- m_{N+1}} + e^{x_{N+1}-m_{N+1}}  \\
     &= (\sum_{j=1}^{N} e^{x_j - m_N}) * e^{m_N- m_{N+1}} + e^{x_{N+1}-m_{N+1}} \\
     &= \sum_{j=1}^{N} e^{x_j - m_{N+1}} + e^{x_{N+1}-m_{N+1}} \\ 
     &= \sum_{j=1}^{N+1} e^{x_j - m_{N+1}} 
 \end{align*}
-$$
+```
 
 > Question: heck how is value of $l_N$ substituted directly
