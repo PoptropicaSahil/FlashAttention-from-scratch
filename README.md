@@ -9,7 +9,8 @@
 <img src="readme-images/sdpa.png" alt="drawing" width="1000"/>
 
 
-## Making softmax safe
+## **MAKING SOFTMAX SAFE**
+
 > **Numerically unstable** means it cannot be represented with a float32 or float16
 
 ### Intuition
@@ -33,7 +34,10 @@ We will choose $k = \max_i{(x_i)}$ \
 All exponentials become 0 or lesser, which can be represented well
 
 ### Algorithm
-$$softmax(x_i) = \dfrac{\exp(x_i - x_{max})}{\sum_1^N \exp(x_j - x_{max})}$$ 
+$$
+softmax(x_i) = \dfrac{\exp(x_i - x_{max})}{\sum_1^N \exp(x_j - x_{max})}
+$$ 
+
 Given a `N*N` matrix,  for each row -
 | Step  | Description                          | Time Complexity | Memory Reads |
 |-------------|--------------------------------------|-----------------|--------------|
@@ -107,4 +111,66 @@ Fuse the first two for-loops into one
 \end{align*}
 ```
 
-> Question: heck how is value of $l_N$ substituted directly
+> Question: check how is value of $l_N$ substituted directly
+
+## **BLOCK MATRIX MULTIPLIATION**
+Consider $A_{M, k} * B_{k, N} = C_{M,N}$. To make it fully parallel, we need as many cores as number of elements in the $C$ i.e. $M*N$. But we don't have that many cores/gpus. 
+
+<img src="readme-images/bmm1.png" alt="drawing" width="1000"/>
+
+Consider the big matrices as collections of blocks. Output after multiplying blocks will be a block, instead of a scalar. 
+
+$A_{1,1} \sim (4,2), A_{1,2} \sim (4,2)$ <br> 
+$B_{1,1} \sim (2,2), B_{2,1} \sim (2,2)$ <br>
+$A_{1,1} * B_{1,1} + A_{1,2} * B_{2,1} \sim (4,2) + (4,2) \sim (4,2)$
+
+If we have say 8 cores, we can assign each block operation to a different core, all in parallel.  
+
+## Application of BMM
+We want to calculate 
+
+$S = Q K^T \in ℝ^{N, N}$,  then $P = softmax(S)$, then $O = S V \in ℝ^{N, d}$
+
+Let us not consider the softmax function for a while, then we do
+
+$O = (Q K^T) V \in ℝ^{N, d}$ \
+where $Q, K, V \in ℝ^{N, d}$
+
+<img src="readme-images/bmm2.png" alt="drawing" width="1000"/>
+
+<img src="readme-images/bmm3.png" alt="drawing" width="1000"/>
+
+<img src="readme-images/bmm4.png" alt="drawing" width="1000"/>
+
+
+
+**Pseudocode** \
+For each Block $Q_i$ \
+&emsp; $O_i = Zeroes(2,128)$ \
+&emsp; For each Block $K_j$  // Loop computes a row \
+&emsp;&emsp; $O_i \leftarrow O_i + (Q_i K_j^T) V_J$  \
+&emsp; End For \
+End For
+
+
+## Restoring Softmax
+<img src="readme-images/bmm-softmax1.png" alt="drawing" width="1000"/>
+
+<img src="readme-images/bmm-softmax2.png" alt="drawing" width="1000"/>
+
+**Pseudocode** \
+For each Block $Q_i$ \
+&emsp; $O_i = Zeroes(2,128)$ \
+&emsp; For each Block $K_j$  // Loop computes a row \
+&emsp;&emsp; $P_{ij} = softmax^{*}(Q_i K_J^T)$ \
+&emsp;&emsp; $O_i \leftarrow O_i + (Q_i K_j^T) V_J$  \
+&emsp; End For \
+End For
+
+> **WRONG**: Each of the $P_{ij}$ block has been independently calculated such that the max element for each row in a block is the local max for each block and not the global max for each row.
+
+> **Idea**: If we can *fix* the softmax while iterating on a row, we can also fix blocks of rows since the softmax is applied independently to each row.
+
+
+## **ONLINE SOFTMAX**
+
