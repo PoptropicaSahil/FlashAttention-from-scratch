@@ -174,3 +174,163 @@ End For
 
 ## **ONLINE SOFTMAX**
 
+**Initialization**
+```math
+m_0 = \begin{bmatrix} 
+-\infty \\ 
+-\infty 
+\end{bmatrix} 
+```
+
+```math
+l_0 = \begin{bmatrix} 
+0 \\ 
+0
+\end{bmatrix}
+```
+
+```math
+O_0 = \begin{bmatrix} 
+0 & 0 & \dots & 0 \\ 
+0 & 0 & \dots & 0 
+\end{bmatrix} 
+``` 
+*$O_0 : 2 \times 128$* matrix \
+$l$ is the normalisation factor
+
+
+**Step 1** \
+*Note how normalisation of softmax is not done here. We do it later*
+1. $m_1 = \max(\text{rowmax}(Q_1 K_1^T), m_0)$  // the local maximum
+2. $S_1 = Q_1 K_1^T$  
+3. $l_1 = \text{rowsum}\left[\exp(S_1 - m_1)\right] + l_0 \exp(m_0 - m_1)$   // initially $l_0 = 0$
+4. $P_{11} = \exp(S_1 - m_1)$  // same as $softmax*$
+5. $O_1 = \text{diag}(\exp(m_0 - m_1)) O_0 + P_{11} V_1$  
+
+
+```math
+\begin{align*}
+   O_1 &= \begin{bmatrix} 
+   exp(m_1-m_2)_1 & 0 \\ 
+   0 & exp(m_1-m_2)_2 
+   \end{bmatrix} 
+   \times
+   \begin{bmatrix} 
+   O_{11} & O_{12} & \dots & O_{1, 128} \\ 
+   O_{21} & O_{22} & \dots & O_{2, 128} 
+   \end{bmatrix} 
+\end{align*}
+``` 
+
+**Step 2** 
+1. $m_2 = \max(\text{rowmax}(Q_1 K_2^T), m_1)$  // we may have found a better maximum
+2. $S_2 = Q_1 K_2^T$  
+3. $l_2 = \text{rowsum}\left[\exp(S_2 - m_2)\right] + l_1 \exp(m_1 - m_2)$  
+4. $P_{12} = \exp(S_2 - m_2)$  // same as $softmax*$
+5. $O_1 = \text{diag}(\exp(m_1 - m_2)) O_1 + P_{12} V_2$  
+
+
+**And so on until the last step. Then we apply the $l$ normalisation factor**. The last $l$ i.e. $l_4$ will contain the final normalisation.
+
+**Step 5**\
+$O_5 = \left[\text{diag}(l_4)\right]^{-1} O_4$
+
+
+```math
+l_4 = \begin{bmatrix} 
+l_4^{(1)} \\ 
+l_4^{(2)} 
+\end{bmatrix} 
+
+\rightarrow
+
+\text{diag}(l_4)^{-1} = \begin{bmatrix} 
+\dfrac{1}{l_4^{(1)}} & 0 \\ 
+0 & \dfrac{1}{l_4^{(2)}}
+\end{bmatrix} 
+``` 
+
+Multiplying them gives
+
+```math
+\text{diag}(l_4)^{-1}
+\times 
+\begin{bmatrix} 
+[\dots & \dots & \dots ] \\ 
+[\dots & \dots & \dots] 
+\end{bmatrix} 
+ = [2,2] \times [2,128]
+ = [2, 128]
+```
+
+> Notice how this multiplication is like first row of $O_4$ is divided by $l_4^{(1)}$ and the second row by $l_4^{(2)}$
+
+
+<img src="readme-images/flash-attn1.png" alt="drawing" width="1000"/>
+
+
+## **How does GPU work**
+<img src="readme-images/gpu1.png" alt="drawing" width="700"/>
+
+In the GPU, a group of threads share the same Control Unit. For GPU, it is much more efficient to add more workers instead of control units to each worker. Control units are expensive to add to the chip area of GPU.
+
+**Vector Addition** \
+Top row has thread index \
+<img src="readme-images/gpu2.png" alt="drawing" width="500"/>
+
+**Vector Addition with blocks**\
+We make blocks of size 32. Say GPU has 32 cores then each GPU core can work on one block at a time. 
+If we have block of size 32 but GPU has 64 cores then GPU can schedule two blocks at a time. GPU decides how many blocks to schedule. 
+
+> When we launch a CUDA kernel, CUDA will assign IDs to the blocks and the threads in each block. Then it is upto our understanding about how to map the block id and thread id with the data element.
+
+N = Number of elements in vector.  We divide the vector into groups of 2 elements at a time for given 4 cores\
+<img src="readme-images/gpu3.png" alt="drawing" width="500"/>
+
+Given the Block id (`B_ID`) and thread id (`T_0`, `T_1`), how can we find which element does it correspond to.\
+element_id (`i`) = `B_ID` * Block_size + `T_id`
+```c
+int i = blockIdx.x * blockDim.x + threadIdx.x;
+```
+
+> Working block by block allows the GPU to choose (schedule) how it wants to parallelise the operations
+
+
+Another example \
+<img src="readme-images/gpu4.png" alt="drawing" width="500"/>
+
+```c
+// grid = how many blocks we have
+// block = N/block_size = how many threads we have for each block
+cuda_vector_add<<<grid, block>>>(d_OUT, d_A, d_B, N);
+```
+
+**Matrix addition with blocks**
+
+We have divided matrix into 3 blocks for rows and 3 blocks for columns i.e. 9 blocks. Remember that within each block along one dimension, we have divided it into 2 threads.
+<img src="readme-images/gpu5.png" alt="drawing" width="500"/>
+
+
+```c
+// indexing an array in c
+// A[row_index][col_index]
+size_t index = static_cast<size_t>(row_index) * NUM_COLS + col_index;  
+```
+
+> **BOTTOM LINE**: We decide how to divide the work i.e. we tell CUDA how many blocks we want and how many threads we want in each block. Based on the identifier of the block id and the thread id, WE come up with a way to map it to a sub-unit of work (eg. which part of the matrix or vector should the blocks and threads work with).
+
+
+## **TENSOR LAYOUTS**
+
+**Array/Vector (1D)** \
+<img src="readme-images/tensor1.png" alt="drawing" width="400"/>
+
+In C/CUDA, we get a **pointer** to the location in memory where the pointer **starts** and we use it to access all the rest of the elements
+
+
+<img src="readme-images/tensor2.png" alt="drawing" width="500"/>
+
+> Stride is useful because it allows us to reshape tensors easily without much computation.
+
+**Matrix (2D) - Reshaping**
+<img src="readme-images/tensor3.png" alt="drawing" width="500"/>
