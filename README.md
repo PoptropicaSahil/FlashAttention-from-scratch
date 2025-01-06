@@ -30,7 +30,7 @@ $softmax(x_i) = \dfrac{\exp(x_i)}{\sum_1^N \exp(x_j)}$ . If values of vector are
 ```
 where $k = -\log{(c)}$ \
 So we can *sneak in* a constant in the exponential to decrease its argument and make it safe. \
-We will choose $k = \max_i{(x_i)}$ \ 
+We will choose $k = \max_i{(x_i)}$ <br> 
 All exponentials become 0 or lesser, which can be represented well
 
 ### Algorithm
@@ -65,7 +65,7 @@ Given a `N*N` matrix,  for each row -
 Yes, using local maximums!
 
 ### Example to make it better
-Consider an array `[3,2,5,1]`. To calculate `l` we would go like 
+Consider an array `[3,2,5,1]`. To calculate $l$ we would go like 
 - $m_0 = 0, l_0 = 0$
 - $m_1 = 3, l_1 = 0 + e^{3-3} $
 - $m_2 = \max(3, 2) = 3, l_2 = l_1 + e^{2-3}$ $\rightarrow$  *If the array was only till here then it was okay*
@@ -269,10 +269,14 @@ Multiplying them gives
 <img src="readme-images/flash-attn1.png" alt="drawing" width="1000"/>
 
 
-## **How does GPU work**
-<img src="readme-images/gpu1.png" alt="drawing" width="700"/>
+## **HOW DOES THE GPU WORK**
+<img src="readme-images/gpu1.png" alt="drawing" width="1000"/>
 
 In the GPU, a group of threads share the same Control Unit. For GPU, it is much more efficient to add more workers instead of control units to each worker. Control units are expensive to add to the chip area of GPU.
+
+> The DRAM is the main big memory of the GPU, also called High Bandwidth Memory (HBM). The GPU also has *streaming multiprocessors* that has a memory called **shared memory**, which is much much smaller thant he DRAM. Access to the DRAM is very slow and to the shared memory is very very fast. 
+
+> When we work with CUDA, loading data is directly from the Global Memory (slow). Flash Attention reuses elements in the shared memory to reduce memory accesses. Then finally in storing phase, info is moved from the shared memory to the Global Memory. 
 
 **Vector Addition** \
 Top row has thread index \
@@ -307,7 +311,7 @@ cuda_vector_add<<<grid, block>>>(d_OUT, d_A, d_B, N);
 
 **Matrix addition with blocks**
 
-We have divided matrix into 3 blocks for rows and 3 blocks for columns i.e. 9 blocks. Remember that within each block along one dimension, we have divided it into 2 threads.
+We have divided matrix into 3 blocks for rows and 3 blocks for columns i.e. 9 blocks. Remember that within each block along one dimension, we have divided it into 2 threads.\
 <img src="readme-images/gpu5.png" alt="drawing" width="500"/>
 
 
@@ -330,7 +334,48 @@ In C/CUDA, we get a **pointer** to the location in memory where the pointer **st
 
 <img src="readme-images/tensor2.png" alt="drawing" width="500"/>
 
-> Stride is useful because it allows us to reshape tensors easily without much computation.
+> Stride is useful because it allows us to reshape tensors easily without actually moving them around in memory. Moving around the memory is expensive. Simply changing the stride is *free!* 
 
-**Matrix (2D) - Reshaping**
+**Matrix (2D) - Reshaping** \
 <img src="readme-images/tensor3.png" alt="drawing" width="500"/>
+
+
+**Matrix (2D) - Transpose** \
+<img src="readme-images/tensor4.png" alt="drawing" width="500"/>
+
+> NOTE: After transposing, the stride property is lost and the tensor is no longer *contiguous*. That is why in Pytorch you cannot `view` but you have to `reshape`.
+
+**Matrix (3D) - Transpose** \
+<img src="readme-images/tensor5.png" alt="drawing" width="500"/>
+
+Stride = *product of dimensions after itself*
+
+
+## **TRITON**
+Refer to `/triton/vector_add.ipynb`
+
+The launch grid tells triton how many blocks we want to launch. Earlier for CUDA kernels, we specified how many blocks and how many threads in each blocks i.e. we write at the thread level. In triton, we only tell about blocks, triton chooses how many threads to launch. We just tell what a group of threads should do.
+
+Note that each program in triton works with a group of data i.e. not a single element but a block of elements.
+
+
+
+## **FLASH ATTENTION FORWARD PASS**
+Flash Attention version 1 had the outer for loop for each $K_j$ block and inner loop for $Q_i$ block $\rightarrow$ less parallelisable because we saw output of attention can be computed independently for each block of Queries (so easy to parallelise).
+
+Infact we spawn many kernels each working with one iteration of the outer for loop of Query block. Each kernel will then iterate over the inner for loop of Key blocks.
+<img src="readme-images/flash-attn2.png" alt="drawing" width="1000"/>
+
+At the end of for loops, we have to store output to the HBM
+<img src="readme-images/flash-attn3.png" alt="drawing" width="1000"/>
+
+> Note: The algorithm above shows for only one sequence of length $N$, but we have to work with a batch of input sequences. We also will have multiple heads for each sequence which can work independently.
+
+We will therefore parallelise - 
+1. Each sequence in the batch
+2. Each head (within the sequence)
+3. Each Query block (within the head)
+
+Max number of *programs* in parallel = $batch\_size * num\_heads * (seq\_len / block\_size\_query) $
+
+> Triton implementation of attention does $2^x$ instead of $e^x$ maybe becuase it is faster. They compensate later by taking $log$ but we directly take $e^x$.
