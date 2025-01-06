@@ -376,6 +376,8 @@ We will therefore parallelise -
 2. Each head (within the sequence)
 3. Each Query block (within the head)
 
-Max number of *programs* in parallel = $batch\_size * num\_heads * (seq\_len / block\_size\_query) $
+Max number of *programs* in parallel = $batch\_{size} * num\_{heads} * (seq\_{len} / block\_{size}\_{query}) $
 
 > Triton implementation of attention does $2^x$ instead of $e^x$ maybe becuase it is faster. They compensate later by taking $log$ but we directly take $e^x$.
+
+> Every implementation in `torch` like softmax, relu etc is always implemented as a class which derives from `torch.autograd.function`. It should provide two methods - forward (pass) and backward (pass)
