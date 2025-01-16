@@ -380,4 +380,6 @@ Max number of *programs* in parallel = $batch\_{size} * num\_{heads} * (seq\_{le
 
 > Triton implementation of attention does $2^x$ instead of $e^x$ maybe becuase it is faster. They compensate later by taking $log$ but we directly take $e^x$.
 
+Usually in forward pass we'll store two things - row max and normalisation factor. But with **logsumexp** trick, we can only store one value $L_i$ (line 13 of algorithm)
+
 > Every implementation in `torch` like softmax, relu etc is always implemented as a class which derives from `torch.autograd.function`. It should provide two methods - forward (pass) and backward (pass)
