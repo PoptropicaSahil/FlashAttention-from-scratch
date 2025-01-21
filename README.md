@@ -383,3 +383,9 @@ Max number of *programs* in parallel = $batch\_{size} * num\_{heads} * (seq\_{le
 Usually in forward pass we'll store two things - row max and normalisation factor. But with **logsumexp** trick, we can only store one value $L_i$ (line 13 of algorithm)
 
 > Every implementation in `torch` like softmax, relu etc is always implemented as a class which derives from `torch.autograd.function`. It should provide two methods - forward (pass) and backward (pass)
+
+
+### **Splitting of the for loop**
+*Causal Attention*: Do not allow Query to attend to Keys, Values after it. *Non-causal Attenion*: All Queries can attend to all Keys and Values.
+
+<img src="readme-images/causal.png" alt="drawing" width="700"/>

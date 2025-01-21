@@ -4,7 +4,89 @@ import triton
 import triton.language as tl
 
 
+
 # A triton kernel is just a python method with the triton jit decorator
+@triton.jit
+def _attn_fwd_inner(
+    O_block,
+    l_i,
+    m_i,
+    Q_block,
+    K_block_ptr,
+    V_block_ptr, 
+    block_index_q,
+    softmax_scale, 
+    BLOCK_SIZE_Q: tl.constexpr,
+    BLOCK_SIZE_KV: tl.constexpr,
+    STAGE: tl.constexpr, 
+    offs_q: tl.constexpr,
+    offs_kv: tl.constexpr, 
+    SEQ_LEN: tl.constexpr,
+):
+    # range of values handled by this stage
+    if STAGE == 1:
+        # Causal attn, STAGE passed 4 - (3) = 1
+        # From 0 to the left of the diagonal
+        lo, hi = 0, block_index_q * BLOCK_SIZE_Q
+    elif STAGE == 2:
+        # Used only for the block in which there is transition between non-masked and masked keys
+        # i.e. the diagonal entries (remember all are blocks which carry individual elements)
+        lo, hi = block_index_q * BLOCK_SIZE_Q, (block_index_q + 1) * BLOCK_SIZE_Q
+        lo = tl.multiple_of(lo, BLOCK_SIZE_Q)
+    else:
+        # Only used for non-causal attention, where we don't mask out anything
+        lo, hi = 0, SEQ_LEN
+
+    # Load blocks of keys and values
+    K_block_ptr = tl.advance(K_block_ptr, (0, lo))
+    V_block_ptr = tl.advance(V_block_ptr, (lo, 0))
+
+    # Loop over k, v and update accumulator
+    for start_kv in range(lo, hi, BLOCK_SIZE_KV):
+        # Let the compiler know (as a hint) that start_n is a multiple of BLOCK_N, so the compiler can do optimisations
+        # NOTE: Telling the Triton compiler this information helps improve its pipelining algorithm for the 'for loop'
+        start_kv = tl.multiple_of(start_kv, BLOCK_SIZE_KV)
+
+        # Compute qk
+        # NOTE: K_block_ptr was already defined as a transpose so we take dot product directly
+        K_block = tl.load(K_block_ptr)
+        QK_block = tl.dot(Q_block, K_block) # Q_block was already loaded while calling _attn_fwd_inner
+
+        # TODO: Add comments Timestamp 4:10:00
+        if STAGE == 2:
+            mask = offs_q[:, None] >= (start_kv + offs_kv[None, :])
+            QK_block = QK_block * softmax_scale + tl.where(mask, 0, -1.0e6)
+            m_ij = tl.maximum(m_i, tl.max(QK_block, 1))
+            QK_block -= m_ij[:, None]
+        else:
+            # Compute the maximum value of qk or keep the old max value
+            m_ij = tl.maximum(m_i, tl.max(QK_block, 1) * softmax_scale)
+            QK_block = QK_block * softmax_scale 
+            QK_block -= m_ij[:, None]
+
+        # Compute the exponential of each dot product
+        # so now we are computing exp(qk_ij - m_ij). We already subtracted m_ij in previous step
+        P_block = tl.math.exp(QK_block)
+
+        # Compute the sum by rows of the attention scores. We will 'fix' this normalisation factor (of the current block) later
+        l_ij = tl.sum(P_block, 1)
+
+        # Correction factor for the previous l_i. Same as e^(m_i (j-1) - m_i (j) )
+        alpha = tl.ath.exp(m_i - m_ij)
+
+        # Apply the correction factor to the previous l_i and add the new l_ij
+        l_i = l_i * alpha + l_ij
+
+        # Load the v block
+        V_block = tl.load(V_block_ptr)
+        P_block = P_block.to(tl.float16) # type conversion
+
+        # O_new = P x V + O_old * alpha
+        O_block = O_block * alpha[:, None]
+        O_block = tl.dot(P_block, V_block, O_block)
+
+
+
 @triton.jit
 def _attn_fwd(
     Q,  # BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM
@@ -60,6 +142,8 @@ def _attn_fwd(
         index_batch.to(tl.int64) * stride_Q_batch
         + index_head.to(tl.int64) * stride_Q_head
     )
+
+    # These pointers can also be treated directly as tensors, that is why we provide shapes
 
     # Till now we are pointing to the correct batch and the head i.e. Q[index_batch, index_head, :, :]
     # Q Shape is [index_batch, index_head, seq_len, head_dim]
@@ -118,6 +202,93 @@ def _attn_fwd(
         order=(1, 0),
     )
 
+    # So far, we have moved our pointers to the right Q block and beginning of K, V block that we will work with
+
+    # Now we need the offsets of queries inside of each block of queries that this program will work with
+    # offsets_q: the offsets for the tokens in the Q to process
+    offs_q = block_index_q * BLOCK_SIZE_Q + tl.arange(0, BLOCK_SIZE_Q)
+
+    # offsets_k,v: the offsets for the tokens in the K and V sequence to process
+    # Remember how initially, pointer to K and V point to beginning of sequence of K, V
+    offs_kv = tl.arange(0, BLOCK_SIZE_KV)
+
+    # Now we will initialise variables
+    # NOTE: Check line 5 of Algorithm
+
+    # m_i: the running maximum. We have one for each query
+    # This is a block of numbers based on how many queries we have in a block of queries
+    # initialised with -inf 
+    m_i = tl.zeros([BLOCK_SIZE_Q], dtype=tl.float32) - float("inf")
+
+    # l_i: the running sum. We have one for each query (as we sum the attention scores by rows)
+    # The +1.0 is also in the original code. Maybe it is to make the log stable since later we use l_i to compute logsumexp
+    l_i = tl.zeros([BLOCK_SIZE_Q], dtype=tl.float32) + 1.0
+
+    # acc: the accumulator for the output, which is a group of rows of the 0 matrix
+    # NOTE: This is one a row (block) of the O matrix. Check "readme-images/bmm4.png
+    O_block = tl.zeros([BLOCK_SIZE_Q, HEAD_DIM], dtype=tl.float32)
+
+    # Load the blocks of Q: it will stay in SRAM throughout, we took from HBM
+    Q_block = tl.load(Q_block_ptr) # block_shape=(BLOCK_SIZE_Q, HEAD_DIM),
+
+    # Stage: 3 if causal else 1
+
+    # The _attn_fwd_inner will be a for loop
+    # NOTE: This inner loop will go over over all key and value blocks one by one
+    # And for each kv block, it will have to fix previously computed SOFTMAX* block
+    # Fix will be by the diag matrix in algorithm from previous iteration. 
+    # Base output is P_i * V_i from the current iteration
+
+
+    # NOTE: Check the splitting of for loop in readme
+    # Causal case: 
+    # Loop 1 --> STAGE = 3 --> _attn_fwd_inner with 4 - STAGE = 1 --> From 0 to the left of the diagonal
+    # Loop 2 --> Next loop with 2 --> diagonal entries
+    # Non-causal case:
+    # Loop 1 --> STAGE = 1 --> _attn_fwd_inner with 4 - STAGE = 3 --> All elements i.e. else condition
+
+
+    # First, we run the loop for everything before diagonal (needed for both causal and non causal)
+    # Then if causal, we skip run the loop for everything after diagonal
+    if STAGE == 1 or STAGE == 3:
+        # Run for all where key index is smaller than current queries block
+        # This step runs for the blocks to the left of the diagonal 
+        O_block, l_i, m_i = _attn_fwd_inner(
+            O_block,
+            l_i,
+            m_i,
+            Q_block,
+            K_block_ptr,
+            V_block_ptr, 
+            block_index_q,
+            softmax_scale, 
+            BLOCK_SIZE_Q,
+            BLOCK_SIZE_KV,
+            4 - STAGE, # tells if we are on left or right of diagonal - do we apply causal mask or not
+            offs_q,
+            offs_kv, 
+            SEQ_LEN
+        )
+
+    if STAGE == 3:
+        # When key index is more than query index, we don't need to compute anything since it will be 0 right of diag
+        # This step runs for the blocks in the diagonal in the causal attention
+        O_block, l_i, m_i = _attn_fwd_inner(
+            O_block,
+            l_i,
+            m_i,
+            Q_block,
+            K_block_ptr,
+            V_block_ptr, 
+            block_index_q,
+            softmax_scale, 
+            BLOCK_SIZE_Q,
+            BLOCK_SIZE_KV,
+            2, 
+            offs_q,
+            offs_kv, 
+            SEQ_LEN
+        )
 
 class TritonAttention(torch.autograd.Function):
     @staticmethod
