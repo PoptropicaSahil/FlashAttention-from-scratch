@@ -75,6 +75,7 @@ def _attn_fwd_inner(
         alpha = tl.ath.exp(m_i - m_ij)
 
         # Apply the correction factor to the previous l_i and add the new l_ij
+        # l_i is the normalisation (correction) factor for each row in the current output block
         l_i = l_i * alpha + l_ij
 
         # Load the v block
@@ -83,9 +84,20 @@ def _attn_fwd_inner(
 
         # O_new = P x V + O_old * alpha
         O_block = O_block * alpha[:, None]
-        O_block = tl.dot(P_block, V_block, O_block)
+        # The O_block is used as an accummulator i.e. dot function needs some place to store intermediate results, so we use the O_block itself
+        # The notation below is just optimised way
+        # NOTE: "Matmul is just dot product which is in-turn repeated sum, the dot will keep summing the result
+        O_block = tl.dot(P_block, V_block, acc = O_block) # O_block += P_block @ V_block
+
+        # m_i is the max value for each row, needed for the backward pass. We use this instead of again computing m_i in backward pass
+        m_i = m_ij
+
+        # Move to the next block of K and V by moving one BLOCK_SIZE_KV
+        V_block_ptr = tl.advance(V_block_ptr, (BLOCK_SIZE_KV, 0)) # NOTE Remember V is ptr to tensor of shape V[SEQ_LEN, HEAD_DIM]
+        K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_SIZE_KV)) # NOTE Remember K is already transposed K[HEAD_DIM, SEQ_LEN]
 
 
+    return O_block, l_i, m_i
 
 @triton.jit
 def _attn_fwd(
