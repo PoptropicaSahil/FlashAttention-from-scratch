@@ -389,3 +389,67 @@ Usually in forward pass we'll store two things - row max and normalisation facto
 *Causal Attention*: Do not allow Query to attend to Keys, Values after it. *Non-causal Attenion*: All Queries can attend to all Keys and Values.
 
 <img src="readme-images/causal.png" alt="drawing" width="700"/>
+
+
+## **LOGSUMEXP TRICK**
+<img src="readme-images/logsumexp.png" alt="drawing" width="1000"/>
+
+
+## **DERIVATIVES AND JACOBIANS**
+### **Derivative**
+Scalar input, scalar output i.e. $f : ℝ \rightarrow ℝ$
+
+$y = f'(x) = \lim_{h \to 0} \dfrac{f(x + h) - f(x)}{h} = \dfrac{\textrm{how much output changes}}{\textrm{how much input changes}}$
+
+
+```math
+\begin{align*}
+f(x + h) &\cong  f'(x) h + f(x) \\
+f(x + \Delta x) &\cong f'(x) \Delta x + f(x) \\
+f(x + \Delta x) &\cong \frac{\partial y}{\partial x} \Delta x + f(x) \\
+y^{NEW} &\cong \frac{\partial y}{\partial x} \Delta x + y^{OLD} \\
+\end{align*}
+```
+So when $X^{NEW} \rightarrow X^{OLD} + \Delta x$, it implies that $y^{NEW} \rightarrow y^{OLD} + \dfrac{\partial y}{\partial x} \Delta x$ \\
+In other words, if $X$ is changed by $\Delta x$, then $y$ wil change approxmately by $\dfrac{\partial y}{\partial x} \Delta x$
+
+
+### **Chain Rule**
+Let $z = f(g(x))$
+
+We have:
+$x \xrightarrow{g} y \xrightarrow{f} z$
+
+Step-by-step changes:
+
+$x^{NEW} \to x^{OLD} + \Delta x \implies y^{NEW} \cong y^{OLD} + \dfrac{\partial y}{\partial x} \Delta x$
+
+$y^{NEW} \to y^{OLD} + \Delta y \implies z^{NEW} \cong z^{OLD} + \dfrac{\partial z}{\partial y} \Delta y$
+
+Substituting:
+$z^{NEW} \cong z^{OLD} + \dfrac{\partial z}{\partial y} \cdot \dfrac{\partial y}{\partial x} \Delta x$
+
+$$\dfrac{\partial z}{\partial x} = \dfrac{\partial z}{\partial y} \cdot \dfrac{\partial y}{\partial x}$$
+
+
+### **Gradient**
+Vector input, scalar output i.e. $f : ℝ^{N} \rightarrow ℝ$
+
+```math
+f \left( \begin{bmatrix} 
+x_1 \\ 
+x_2 
+\end{bmatrix} \right)
+ = y
+```
+
+
+$x^{NEW} \rightarrow x^{OLD} + \Delta x \implies y^{NEW} \rightarrow y^{OLD} + \dfrac{\partial y}{\partial x} \Delta x$ <br>
+
+$\dfrac{\partial y}{\partial x} \Delta x = \dfrac{\partial y}{\partial x_1} \Delta x_1 + \dfrac{\partial y}{\partial x_2} \Delta x_2 + \dots + \dfrac{\partial y}{\partial x_N} \Delta x_N$
+
+i.e. the gradient $\dfrac{\partial y}{\partial x}$ is a vector made up of all partial derivatives
+
+
+### **Jacobian**
+Vector input, vector output i.e. $f : ℝ^{N} \rightarrow ℝ^{N}$

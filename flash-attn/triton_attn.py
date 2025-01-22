@@ -42,7 +42,7 @@ def _attn_fwd_inner(
     V_block_ptr = tl.advance(V_block_ptr, (lo, 0))
 
     # Loop over k, v and update accumulator
-    for start_kv in range(lo, hi, BLOCK_SIZE_KV):
+    for start_kv in range(lo, hi, BLOCK_SIZE_KV): # type: ignore
         # Let the compiler know (as a hint) that start_n is a multiple of BLOCK_N, so the compiler can do optimisations
         # NOTE: Telling the Triton compiler this information helps improve its pipelining algorithm for the 'for loop'
         start_kv = tl.multiple_of(start_kv, BLOCK_SIZE_KV)
@@ -54,7 +54,7 @@ def _attn_fwd_inner(
 
         # TODO: Add comments Timestamp 4:10:00
         if STAGE == 2:
-            mask = offs_q[:, None] >= (start_kv + offs_kv[None, :])
+            mask = offs_q[:, None] >= (start_kv + offs_kv[None, :]) # type: ignore
             QK_block = QK_block * softmax_scale + tl.where(mask, 0, -1.0e6)
             m_ij = tl.maximum(m_i, tl.max(QK_block, 1))
             QK_block -= m_ij[:, None]
@@ -106,7 +106,7 @@ def _attn_fwd(
     V,  # BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM
     softmax_scale,
     M,  # BATCH_SIZE, NUM_HEADS, SEQ_LEN
-    O,  # BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM
+    O,  # BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM  # noqa: E741
     stride_Q_batch,
     stride_Q_head,
     stride_Q_seq,
@@ -301,6 +301,23 @@ def _attn_fwd(
             offs_kv, 
             SEQ_LEN
         )
+
+    # This is needed to compute the logsumexp for the backward pass
+    # For backward pass to recompute softmax without having to recalculate normalisation factor and max value for 
+    # each row, we should be saving both i.e. 
+    # max value of each row in query block and
+    # normalisation factor for each query in the query block
+    m_i += tl.math.log(l_i)
+
+    # Normalise the output at the end
+    O_block = O_block / l_i[:, None]
+
+    # Save the normalisation factor and max value for the backward pass
+    # Remember M is ptr to tensor of shape BATCH_SIZE, NUM_HEADS, SEQ_LEN
+    m_ptrs = M + index_batch_head * SEQ_LEN + offs_q
+    tl.store(m_ptrs, m_i)
+    tl.store(O_block_ptr, O_block.to(O.type.element_type))
+
 
 class TritonAttention(torch.autograd.Function):
     @staticmethod
