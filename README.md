@@ -397,7 +397,7 @@ Usually in forward pass we'll store two things - row max and normalisation facto
 
 ## **DERIVATIVES AND JACOBIANS**
 ### **Derivative**
-Scalar input, scalar output i.e. $f : ℝ \rightarrow ℝ$
+Consider function with scalar input, scalar output i.e. $f : ℝ \rightarrow ℝ$
 
 $y = f'(x) = \lim_{h \to 0} \dfrac{f(x + h) - f(x)}{h} = \dfrac{\textrm{how much output changes}}{\textrm{how much input changes}}$
 
@@ -410,7 +410,8 @@ f(x + \Delta x) &\cong \frac{\partial y}{\partial x} \Delta x + f(x) \\
 y^{NEW} &\cong \frac{\partial y}{\partial x} \Delta x + y^{OLD} \\
 \end{align*}
 ```
-So when $X^{NEW} \rightarrow X^{OLD} + \Delta x$, it implies that $y^{NEW} \rightarrow y^{OLD} + \dfrac{\partial y}{\partial x} \Delta x$ \\
+So when $X^{NEW} \rightarrow X^{OLD} + \Delta x$, it implies that $y^{NEW} \rightarrow y^{OLD} + \dfrac{\partial y}{\partial x} \Delta x$ 
+
 In other words, if $X$ is changed by $\Delta x$, then $y$ wil change approxmately by $\dfrac{\partial y}{\partial x} \Delta x$
 
 
@@ -433,7 +434,9 @@ $$\dfrac{\partial z}{\partial x} = \dfrac{\partial z}{\partial y} \cdot \dfrac{\
 
 
 ### **Gradient**
-Vector input, scalar output i.e. $f : ℝ^{N} \rightarrow ℝ$
+Consider function with Vector input, scalar output i.e. $f : ℝ^{N} \rightarrow ℝ$ 
+
+> The gradient takes a scalar function as input and produces a vector field as output. The dot product between the gradient and a direction vector produces a scalar (the directional derivative). The gradient's purpose is to pack together all the partial derivative information of a function into a vector.
 
 ```math
 f \left( \begin{bmatrix} 
@@ -443,13 +446,112 @@ x_2
  = y
 ```
 
+> Note that $\Delta x$ is a vector now i.e. $(\partial x_1, \partial x_2, \dots \partial x_n)$
 
-$x^{NEW} \rightarrow x^{OLD} + \Delta x \implies y^{NEW} \rightarrow y^{OLD} + \dfrac{\partial y}{\partial x} \Delta x$ <br>
+${\text{When}}~x^{NEW} \rightarrow x^{OLD} + \Delta x \dots {\text{(vector sum)}}$ <br>
+${\text{Implies}}~ y^{NEW} \rightarrow y^{OLD} + \dfrac{\partial y}{\partial x} \Delta x \dots {\text{(dot product of gradient and direction vector )}}$ <br>
 
 $\dfrac{\partial y}{\partial x} \Delta x = \dfrac{\partial y}{\partial x_1} \Delta x_1 + \dfrac{\partial y}{\partial x_2} \Delta x_2 + \dots + \dfrac{\partial y}{\partial x_N} \Delta x_N$
 
-i.e. the gradient $\dfrac{\partial y}{\partial x}$ is a vector made up of all partial derivatives
+```math
+\text{Gradient} = \dfrac{\partial y}{\partial x} 
+```
+i.e. the gradient is a vector made up of all partial derivatives
 
 
 ### **Jacobian**
-Vector input, vector output i.e. $f : ℝ^{N} \rightarrow ℝ^{N}$
+Consider function with Vector input, vector output i.e. $f : ℝ^{N} \rightarrow ℝ^{M}$
+
+```math
+f \left( \begin{bmatrix} 
+x_1 \\ 
+x_2 
+\end{bmatrix} \right)
+ = \begin{bmatrix} 
+y_1 \\ 
+y_2 \\
+y_3
+\end{bmatrix}
+```
+
+${\text{When}}~x^{NEW} \rightarrow x^{OLD} + \Delta x \dots {\text{(vector sum)}}$ <br>
+${\text{Implies}}~ y^{NEW} \rightarrow y^{OLD} + \dfrac{\partial y}{\partial x} \Delta x \dots {\text{(Matrix-vector product of Jacobian and direction vector)}}$ <br>
+
+```math
+\text{Jacobian} = 
+\begin{bmatrix}
+\dfrac{\partial y_1}{\partial x_1} & \dfrac{\partial y_1}{\partial x_2} & \cdots & \dfrac{\partial y_1}{\partial x_N} \\
+\vdots & \vdots & \ddots & \vdots \\
+\dfrac{\partial y_M}{\partial x_1} & \dfrac{\partial y_M}{\partial x_2} & \cdots & \dfrac{\partial y_M}{\partial x_N}
+\end{bmatrix}
+```
+
+$\dfrac{\partial y}{\partial x} \Delta x \rightarrow (M \times N) \times (N \times 1) = (M \times 1)$
+
+
+### **Generalised Jacobian**
+Consider function with Tensor input, tensor output i.e. $f : ℝ^{N_1 \times \dots \times N_{D_X}} \rightarrow ℝ^{M_1 \times \dots \times M_{D_Y}}$
+
+$f(D_X \text{ - dimensional tensor}) = D_Y\text{ - dimensional tensor}$
+
+
+${\text{When}}~x^{NEW} \rightarrow x^{OLD} + \Delta x \dots {\text{(tensor sum)}}$ <br>
+${\text{Implies}}~ y^{NEW} \rightarrow y^{OLD} + \dfrac{\partial y}{\partial x} \Delta x \dots {\text{(Tensor product)}}$ <br>
+
+```math
+\text{Generalised Jacobian} = \dfrac{\partial y}{\partial x} 
+```
+
+$\dfrac{\partial y}{\partial x} \Delta x \rightarrow (M_1 \times \dots \times M_{D_Y}) \times (N_1 \times \dots \times N_{D_X})$
+
+
+## **AUTOGRAD WITH DERIVATIVES**
+<img src="readme-images/autograd.svg" alt="drawing" width="500"/>
+
+$y_3$ becomes our loss function (scalar). We need gradient of loss function with respect to all inputs (leafs i.e. parameters $w_1, b_1$ and inputs $a$) of the computational graph. 
+
+$\phi = y_3 = (y_2)^2 = (y_1 + b_1)^2 = (a w_1 + b_1 )^2$
+
+*Method 1 :* If we directly know loss function wrt inputs (as in this case), then we can directly compute the gradients
+
+$\dfrac{\partial \phi}{\partial w_1} = 2(a w_1 + b_1 ) (a) = 2 a (a w_1 + b_1)$
+
+*Method 2 :* Using chain rule, 
+
+```math
+\begin{align*}
+\dfrac{\partial \phi}{\partial w_1} &= \dfrac{\partial \phi}{\partial y_3} \cdot \dfrac{\partial y_3}{\partial y_2} \cdot \dfrac{\partial y_2}{\partial y_1} \cdot \dfrac{\partial y_1}{\partial w_1} \\
+&= 1 \cdot 2 y_2 \cdot 1 \cdot a \\
+&= 2a y_2 \\
+&= 2a (a w_1 + b_1)
+\end{align*}
+```
+
+> Pytorch does not know the symbolic operations that led to the output i.e. it does not know the exact expression each function is computes, it treats each function like a blackbox. It only knows what are the functions that computed the output. Each function in pytorch is a class which implements two methods - forward step and backward step.
+
+**Forward step:** Takes input and returns output \
+**Backward step:** Takes the gradient of the loss function wrt its output and needs to compute the gradient of the loss function wrt its input.
+
+Pytorch cannot calculate gradient of the loss function wrt input because of not knowing the symbolic representation. 
+
+*Step 1A:* Pytorch knows gradient of loss function wrt $y_3$ i.e. last function's output i.e. $\dfrac{\partial \phi}{\partial y_3}$ ( = 1 ;) \
+*Step 1B:* It asks the function if it can give gradient of loss function wrt $y_2$ i.e. its input. **YES! Using Chain Rule.** The function can take this given gradient and multiply by the Jacobian (here gradient) of output wrt input. **This gives us the gradient of loss function wrt input.**
+
+```math
+\begin{align*}
+\dfrac{\partial \phi}{\partial y_2} &= \dfrac{\partial \phi}{\partial y_3} \cdot \dfrac{\partial y_3}{\partial y_2} \\
+\dfrac{\partial \text{(loss)}}{\partial \text{(input)}} &= \dfrac{\partial \text{(loss)}}{\partial \text{(output)}} \cdot \dfrac{\partial \text{(output)}}{\partial \text{(input)}} \\ 
+&= \text{known} \cdot \text{Jacobian of output wrt input}
+\end{align*}
+```
+
+*Step 2A:* Pytorch knows this $\dfrac{\partial \phi}{\partial y_2}$ \
+*Step 2B:* Asks same question to the previous function. Again Chain Rule. $\dfrac{\partial \phi}{\partial y_1} = \dfrac{\partial \phi}{\partial y_2} \cdot \dfrac{\partial y_2}{\partial y_1}$
+
+
+*Step 3A:* Pytorch knows this $\dfrac{\partial \phi}{\partial y_1}$ \
+*Step 3B:* Again Chain Rule. $\dfrac{\partial \phi}{\partial w_1} = \dfrac{\partial \phi}{\partial y_1} \cdot \dfrac{\partial y_1}{\partial w_1}$
+
+> Pytorch therefore runs one operator at a time, backwards in the computation graph, knocking the door of each operator. Each operator applies the Chain rule to calculate the gradient Pytorch needs.
+
+### **Problem with Jacobian**
