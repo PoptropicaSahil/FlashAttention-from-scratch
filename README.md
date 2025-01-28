@@ -555,3 +555,54 @@ Pytorch cannot calculate gradient of the loss function wrt input because of not 
 > Pytorch therefore runs one operator at a time, backwards in the computation graph, knocking the door of each operator. Each operator applies the Chain rule to calculate the gradient Pytorch needs.
 
 ### **Problem with Jacobian**
+Consider matrices $Y^{N,M}, X^{N, D}, W^{D, M}$
+
+> Look at $X$ as a collection of $N$ vectors each of $D$ dimensions. 
+
+```math
+\begin{align*}
+Y &= X W \\
+\dfrac{\partial \phi}{\partial X} &= \dfrac{\partial \phi}{\partial X} \cdot \dfrac{\partial Y}{\partial X} \\
+\text{Downstream gradient} &= \text{Upstream gradient} \cdot \text{Local Jacobian}
+\end{align*}
+```
+
+Here, the Jacobian matrix's size will be $(N, M) \times (N, D)$ i.e. $N \times M \times N \times D$. Considering N is say 1024, Jacobian matrix becomes huge. **However, the Jacobian matrix is super sparse**. We can optimise the problem without fully storing the Jacobian matrix. 
+
+
+If we look at the effect of input tokens on output tokens, 
+
+```math
+\begin{bmatrix}
+[\text{input row 1}]\\
+[\text{input row 2}]\\
+\vdots  \\
+[\text{input row N}]\\
+\end{bmatrix}_{N, D}
+
+\times 
+
+\begin{bmatrix}
+[\cdots & \cdots  & \cdots ]\\
+[\cdots & \cdots  & \cdots ]\\
+\vdots & \vdots &  \vdots \\
+[\cdots & \cdots  & \cdots ]\\
+\end{bmatrix}_{D, M}
+
+=
+
+\begin{bmatrix}
+[\text{output row 1}]\\
+[\text{output row 2}]\\
+\vdots  \\
+[\text{output row N}]\\
+\end{bmatrix}_{N, M}
+```
+
+Note how $\text{output row 1}$ is the dot product of $\text{input row 1}$ and all columns of the second $(D, M)$ matrix <br>
+
+So, the derivatives of each of elements of $\text{output row 1}$ wrt dimensions of all tokens in the first $(N, D)$ matrix except for the $\text{input row 1}$ will be 0 
+
+> In other words, derivatives of $\text{output row 1}$ wrt all of $\text{input row 1} \cdots \text{input row N}$ will be 0 
+
+## **GRADIENT OF THE MATMUL OPERATATION**
