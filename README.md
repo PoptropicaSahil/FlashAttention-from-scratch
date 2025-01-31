@@ -606,3 +606,94 @@ So, the derivatives of each of elements of $\text{output row 1}$ wrt dimensions 
 > In other words, derivatives of $\text{output row 1}$ wrt all of $\text{input row 1} \cdots \text{input row N}$ will be 0 
 
 ## **GRADIENT OF THE MATMUL OPERATATION**
+Consider $Y = X W$. During the backward pass, Pytorch will give gradients of the loss i.e. $\dfrac{\partial \phi}{\partial Y}$, and require us to compute the gradients of the loss function wrt the inputs $X$ and $W$.
+
+> Note that we cannot directly use the Jacobian and the chain rule here due to big size of Jacobian. We use the sparsity to our advantage.
+
+> **IMPORTANT:** Also remember how the shape of the gradient is equal to the shape of the denominator (input). The numerator is a scalar and the denominator is a vector. 
+
+The main class is a node in the computational graph, that takes input `Q, K, V` and outputs `O`
+```python
+class TritonAttention(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, Q, K, V, causal, softmax_scale):
+```
+
+Pytorch gives gradient of loss wrt `O` i.e. $\dfrac{\partial \phi}{\partial O}$, then will ask the class to compute the gradient of loss wrt `Q, K, V`. 
+
+> We are fusing together operations like $Q K^T$, `softmax`, matmul, we need to derive by hand the gradient of the loss wrt input of matlmul, and give to Pytorch.
+
+Continuing on $Y = X W$, we need $\dfrac{\partial \phi}{\partial X}$, $\dfrac{\partial \phi}{\partial W}$. <br>
+
+Consider $X^{N, D}, W^{D, M}, Y^{N,M}$, (N=1, D=3, M=4) <br>
+
+Again, Pytorch gives us $\dfrac{\partial \phi}{\partial Y}$ i.e. a tensor of shape $[N,M]$, we need $\dfrac{\partial \phi}{\partial X}$ i.e. tensor of shape $[N, D]$
+
+
+```math
+\begin{align*}
+
+Y &= 
+\begin{bmatrix}
+X_{11} & X_{12} & X_{13}
+\end{bmatrix}
+
+\times 
+
+\begin{bmatrix}
+W_{11} & W_{12} & W_{13} & W_{14}\\
+W_{21} & W_{22} & W_{23} & W_{24}\\
+W_{31} & W_{32} & W_{33} & W_{34}\\
+\end{bmatrix} \\
+
+&= 
+
+\begin{bmatrix}
+(X_{11}W_{11} + X_{12}W_{21} + X_{13}W_{31}) & \dots & \dots & (X_{11}W_{14} + X_{12}W_{24} + X_{13}W_{34})
+\end{bmatrix} \\
+
+
+\end{align*}
+```
+
+Let $\dfrac{\partial \phi}{\partial Y} = \begin{bmatrix}dy_{11} & dy_{12} & dy_{13} & dy_{14}\end{bmatrix}$
+
+```math
+\dfrac{\partial \phi}{\partial X} = \dfrac{\partial \phi}{\partial Y} \cdot \dfrac{\partial Y}{\partial X} 
+```
+
+Try to solve RHS and see if anything simplifies. The Jacobian can be written as - 
+
+```math
+\begin{align*}
+
+\dfrac{\partial Y}{\partial X} &= 
+\begin{bmatrix}
+W_{11} & W_{21} & W_{31} \\
+W_{12} & W_{22} & W_{32} \\
+W_{13} & W_{23} & W_{33} \\
+W_{14} & W_{24} & W_{34} \\
+\end{bmatrix} \\
+
+&= W^T !!
+\end{align*}
+```
+
+> NOTE: If we try the same with $N = 2$, we will see the Jacobian being sparse, but with a repeating pattern. The Jacobian worked out for $N=1$ is the repeating pattern in the Jacobian that can be applied to each vector in the tensor $\dfrac{ \partial \phi}{\partial Y}$
+
+```math
+\begin{align*}
+\dfrac{\partial \phi}{\partial X} &= \dfrac{\partial \phi}{\partial Y} \cdot \dfrac{\partial Y}{\partial X} \\
+&= \dfrac{\partial \phi}{\partial Y} \cdot W^T \\
+&= [N, M] \cdot [M, D] \\
+&= [N, D]\\
+&= \text{Downstream gradient}
+\end{align*}
+```
+
+Similarly we get, $\dfrac{\partial \phi}{\partial W} = X^T \cdot \dfrac{\partial \phi}{\partial Y} = [D,N] \cdot [N, M] = [D,M] $
+
+> Can remember like this is the only way the shapes will work out :)
+
+
+## **GRADIENT THROUGH THE SOFTMAX**
