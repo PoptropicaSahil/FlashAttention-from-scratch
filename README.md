@@ -697,3 +697,93 @@ Similarly we get, $\dfrac{\partial \phi}{\partial W} = X^T \cdot \dfrac{\partial
 
 
 ## **GRADIENT THROUGH THE SOFTMAX**
+
+$S = Q K^T; P = \text{Softmax}(S); O = PV$
+
+<img src="readme-images/grad_softmax.svg" alt="drawing" width="400"/>
+
+> Blackbox is wrt Pytorch!
+
+Given $\dfrac{\partial \phi}{\partial O}$ (by Pytorch), we need to calculate $\dfrac{\partial \phi}{\partial Q}, \dfrac{\partial \phi}{\partial K}, \dfrac{\partial \phi}{\partial V}$
+
+Note that there are many intermediate steps from $O$ to $Q, K, V$ like matmul, softmax, another matmul etc. Again, directly using the Chain rule is infeasible because of large size. We need to figure out a way without materialising the Jacobian
+
+Softmax is applied row-wise. We start by looking at one row at a time. 
+Let $S_i = \text{one row of S matrix} = S[i, :] \in ℝ^{N}$ 
+
+$P_i = \text{Softmax}(S_i) \in \in ℝ^{N}$
+
+$\text{Softmax}(P_{ij}) = \dfrac{\exp{S_{ij}}}{\sum_{l=1}^{N} \exp{S_{il}}}$
+
+> NOTE: In the forward pass, we were subtracting the max from each row. However, remember that either subtracting or not, both operations are mathematically equivalent
+
+We want $\dfrac{\partial \phi}{\partial S_i} = \dfrac{\partial \phi}{\partial P_i} \cdot \dfrac{\partial P_i}{\partial S_i}$
+
+> Also in this case we analyse the Jacobian wrt a single input vector, which will be the repeating pattern that can be applied independently to each vector in $\dfrac{\partial \phi}{\partial P_i}$. If we compute the Jacobian using two input vectors, we will see it will be a sparse matrix.
+
+### **What each element in the Jacobian will look like**
+
+$\text{Jacobian} = \dfrac{\partial P_i}{\partial S_i}$
+
+Each element $\dfrac{\partial P_{ij}}{\partial S_{ik}} = \dfrac{\dfrac{\exp{S_{ij}}}{\sum_{l=1}^{N} \exp{S_{il}}}}{\partial S_{ik}}$
+
+> Note how if $P = \begin{bmatrix}P_{11} & P_{12} &  P_{13} \end{bmatrix}$ and $S = \begin{bmatrix}S_{11} & S_{12} & S_{13}\end{bmatrix}$, then $\dfrac{\partial P_{ij}}{\partial S_{ik}}$ will be partial of $P_{11}$ wrt $\begin{bmatrix}S_{11} & S_{12} & S_{13}\end{bmatrix}$, then of $P_{12}$ and $P_{13}$
+
+
+Remember differential of fraction is given by 
+```math
+\left[\dfrac{f(x)}{g(x)}\right]' = \dfrac{f'(x)g(x) - g'(x)f(x)}{\left[g(x)\right]^2}
+```
+
+> NOTE: Here we are taking derivative wrt $S_{ik}$ instead of the usual $x$
+
+Now for cases where $j = k$, 
+```math
+\begin{align*}
+\dfrac{\partial P_{ij}}{\partial S_{ik}} &= \dfrac{e^{S_{ij}} \cdot \sum_{l=1}^{N} e^{S_{il}} - e^{S_{ik}} \cdot e^{S_{ij}}}{\left(\sum_{l=1}^{N} e^{S_{il}}\right)^2} \\
+&= \dfrac{e^{S_{ij}}\left( \sum_{l=1}^{N} e^{S_{il}} - e^{S_{ik}} \right)}{\left(\sum_{l=1}^{N} e^{S_{il}}\right)^2} \\
+&= \dfrac{e^{S_{ij}}}{\sum_{l=1}^{N} e^{S_{il}}} \cdot \dfrac{ \sum_{l=1}^{N} e^{S_{il}} - e^{S_{ik}}}{\sum_{l=1}^{N} e^{S_{il}}} \\
+&= P_{ij} \cdot (1 - P_{ik})
+\end{align*}
+```
+
+Now for cases where $j \neq k$, 
+```math
+\begin{align*}
+\dfrac{\partial P_{ij}}{\partial S_{ik}} &= \dfrac{0 - e^{S_{ik}} \cdot e^{S_{ij}}}{\left(\sum_{l=1}^{N} e^{S_{il}}\right)^2} \\
+&= \dfrac{ - e^{S_{ik}}}{\sum_{l=1}^{N} e^{S_{il}}} \cdot \dfrac{e^{S_{ij}}}{\sum_{l=1}^{N} e^{S_{il}}}  \\
+&= - P_{ik} \cdot P_{ij}
+\end{align*}
+```
+
+In summary, we have
+```math
+\dfrac{\partial P_{ij}}{\partial S_{ik}} =
+\begin{cases}
+   P_{ij}  (1 - P_{ik}) & \text{for }  j = k \\
+   - P_{ik} P_{ij} & \text{for } j \neq k \\
+\end{cases}
+```
+
+The Jacobian then becomes 
+```math
+\begin{align*}
+
+\dfrac{\partial P_{ij}}{\partial S_{ik}} &= 
+\begin{bmatrix}
+P_{i1}(1-P_{i1}) & -P_{i1}P_{i2} & -P_{i1}P_{i3} & \dots & -P{i1}P_{iN} \\
+-P_{i2}P_{i1} & P_{i2}(1-P_{i2}) & -P_{i2}P_{i3} & \dots & -P_{i2}P_{iN} \\
+\vdots & \vdots & \vdots & \ddots & \vdots \\
+-P_{iN}P_{i1} & -P_{iN}P_{i2} & -P_{iN}P_{i3} & \dots & P_{iN}(1-P_{iN}) \\
+\end{bmatrix} \\
+
+&= \text{diag}(P_i) - P_{i} P_{i}^T \\
+&= \text{formula given in the paper} \\
+\end{align*}
+```
+
+> Each diagonal term is like $P_{i1}(1-P_{i1}) = P_{i1} - P_{i1}P_{i1}$. Seperate this way into two matrices, and since $P_i$ is a column vector, $P_i P_i^T$ will be a matrix
+
+
+FlashAttention paper writes that if $y = \text{Softmax}(x)$ then its $\text{Jacobian} = \text{diag(y)} - yy^T$
+
