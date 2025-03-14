@@ -392,7 +392,7 @@ Usually in forward pass we'll store two things - row max and normalisation facto
 
 
 ## **LOGSUMEXP TRICK**
-<img src="readme-images/logsumexp.png" alt="drawing" width="1000"/>
+<img src="readme-images/logsumexp.png" alt="drawing" width="500" height="500"/>
 
 
 ## **DERIVATIVES AND JACOBIANS**
@@ -787,3 +787,138 @@ P_{i1}(1-P_{i1}) & -P_{i1}P_{i2} & -P_{i1}P_{i3} & \dots & -P{i1}P_{iN} \\
 
 FlashAttention paper writes that if $y = \text{Softmax}(x)$ then its $\text{Jacobian} = \text{diag(y)} - yy^T$
 
+
+## **FLASH ATTENTION BACKWARDS**
+
+### **Quick detour on Matrix Multiplication**
+Let $O = A \times B$
+
+```math
+A =
+\begin{bmatrix}
+[a_{11} & a_{12} & a_{13}] \\
+& \vdots & \\
+\end{bmatrix}_{(N, 3)} 
+
+B =
+\begin{bmatrix}
+b_{11} & b_{12} & b_{13} & b_{14} \\
+b_{21} & b_{22} & b_{23} & b_{24} \\
+b_{31} & b_{32} & b_{33} & b_{34}
+\end{bmatrix}_{(3, 4)} \\
+```
+
+**First ROW** of output $O$ is given by 
+```math
+\begin{align*}
+O_1 &=
+\begin{bmatrix}
+a_{11} b_{11} + a_{12} b_{21} + a_{13} b_{31} \\
+a_{11} b_{12} + a_{12} b_{22} + a_{13} b_{32} \\
+a_{11} b_{13} + a_{12} b_{23} + a_{13} b_{33} \\
+a_{11} b_{14} + a_{12} b_{24} + a_{13} b_{34}
+\end{bmatrix} \\
+
+&= a_{11} b_{1, :} + a_{12} b_{2, :} + a_{13} b_{3, :} \\
+&= \sum_{j=1}^{3} a_{1j} b_{j, :}
+\end{align*}
+```
+
+Generalised form, the **$i^{th}$ ROW** of $O$ can be written as 
+```math
+\begin{align*}
+O_i &= a_{i1} b_{1, :} + a_{i2} b_{2, :} + a_{i3} b_{3, :} \\
+&= \sum_{j=1}^{3} a_{ij} b_{j, :} \\
+&= \sum_{j} a_{ij} b_{j} ~ \text{ ~(notation used in the paper)}
+\end{align*}
+```
+
+
+<img src="readme-images/fwd_pass.png" alt="drawing" width="1000"/>
+
+
+### **For Backward Pass**
+
+Remember we derived that for $Y = X W$, 
+```math
+\dfrac{\partial \phi}{\partial X} = \dfrac{\partial \phi}{\partial Y} \cdot W^T \\
+\dfrac{\partial \phi}{\partial W} = X^T \cdot \dfrac{\partial \phi}{\partial Y} \\
+```
+
+In Attention, in the final step we do $O = PV$,
+```math
+\begin{align*}
+\dfrac{\partial \phi}{\partial P} &= \dfrac{\partial \phi}{\partial O} \cdot V^T \iff \text{d}P = \text{d}O \cdot V^T  ~ \text{ ~(notation used in the paper)} \\
+\dfrac{\partial \phi}{\partial V} &= P^T \cdot \dfrac{\partial \phi}{\partial O} \iff \text{d}V =  P^T \cdot \text{d}O ~ \text{ ~(notation used in the paper)} \\
+\end{align*}
+```
+
+<img src="readme-images/bwd_pass.png" alt="drawing" width="1000"/>
+
+To derive $\text{Equation } (3) $, where $v_j$ is the $j^{th}$ **ROW** of $V$, we have
+
+```math
+\begin{align*}
+\text{d}V &=  P^T \cdot \text{d}O \\
+\text{d}V_j &= \sum_{i} P_{ji}^T \text{d}O_i (~ ~ j^{th} \text{ROW of dV}) \\
+&= \sum_{i} P_{ij} \text{d}O_i ~ \text{ ~(notation used in the paper)}
+\end{align*}
+```
+
+For $i^{th}$ ROW of $P$ i.e. $P_{i:}$ 
+<img src="readme-images/softmax_i.png" alt="drawing" width="1000"/>
+
+
+
+
+### **Full Algorithm (from Flash Attention 1)**
+<img src="readme-images/bwd_pass_full.png" alt="drawing" width="1000"/>
+
+1. On line 21, to get $dQ$, it requires iteration through $K_j$'s. Write $dQ$ to HBM.
+1. On line 22, to get $dK$, it requires iteration through $Q_i$'s
+
+But it is inefficient to write to HBM, and complicated to write to . Instead, we *cleverly* code in parts. To compute $dK$, we fix $K^{th}$ block and iterate through $Q$ blocks. Then another iteration to fix the $Q$ blocks and iterate through $K$, $V$ blocks. 
+
+As given in equations $(5, 6)$ below, to compute $dq$ and $dk$ vectors,  we need $D_i$. We will precompute it. 
+$D_i$ is given in Equation $(4)$ and is equal to $do_i^T o_i$
+<img src="readme-images/softmax_ii.png" alt="drawing" width="1000"/>
+
+
+> NOTE: In Triton, as opposed to CUDA, we load variables from HBM to shared memory (SRAM), do all operations there, and when we call the store method, we store the memory from SRAM to HBM. In order to not materialise the $S$ matrix fully, save in HBM, compute on SRAM and get it back - all slow, inefficient, and expensive; we want to recompute what we have on the fly during backward pass! 
+> In other words, it is faster to recompute than re-fetch since I/O bound. 
+
+
+## **SOFTWARE PIPELINING**
+
+Imagine you have a `for` loop - 
+```python
+for i = 1 to N:
+   A = LOAD(...)
+   B = LOAD(...)
+   C = A * B
+   STORE(...)
+```
+
+If we look at a sequential execution of this loop we notice that at any moment, we are only partially using the capability of our GPU
+
+<img src="readme-images/software-pipe1.png" alt="drawing" width="1000"/> \
+In an iteration, when there are memory operations then compute unit is idle. Similarly during compute, memory unit is idle. 
+> There must be a better way!
+
+<img src="readme-images/software-pipe2.png" alt="drawing" width="1000"/> \
+
+All the reading, matrix multiplication etc are `async` operations. The system must support `async` operations
+
+
+### Pipeline Parallelism
+<img src="readme-images/software-pipe3.png" alt="drawing" width="1000"/> 
+
+Imagine a neural network that does not fit in a single GPU. Even if we keep all layers on seperate GPUs, once computation of `layer_1` (on `gpu_1`) is done, outputs are given to `layer_2` (on `gpu_2`). While `gpu_2` is busy, `gpu_1` will remain free.
+
+Solution - we pass many mini batches instead of passing every datapoint at once. Once batch1 of data is passed from `gpu_1` to `gpu_2`, `gpu_2` will start computing on `batch_1`. At the same time, we pass `batch_2` on `gpu_1`
+
+> NOTE: We might have to hold much more memory than we can consume during the prologue. So number of iterations of for loop should be much higher than the number of stages the (for loop) iteration is divided into. 
+
+
+## **THE END**
+I did not follow the last few parts of the video properly. Not because it was taught poorly, but I might have lost track of the big picture while writing an operation or a method. Really could not grasp the Triton language properly as well. I assume having a background in C, C++ would have helped. However, I like the notes on this readme file. Some other time in the future, I'll come back, get a bigger picture idea, and understand the code as well as possible. I've tried to add as many comments as possible, more than those present in Umar Jamil's repo. See you again!
