@@ -71,7 +71,7 @@ Consider an array `[3,2,5,1]`. To calculate $l$ we would go like
 - $m_2 = \max(3, 2) = 3, l_2 = l_1 + e^{2-3}$ $\rightarrow$  *If the array was only till here then it was okay*
 - $m_3 = \max(3, 5) = 5, l_3 = l_2 + e^{5-5} = e^{3-3} + e^{2-3} + e^{5-5}$ $\rightarrow$  *Gone wrong* $\rightarrow$  *we wanted* $e^{3-5} + e^{2-5} + e^{5-5}$ 
 
-To make a correction, we can use a correction factor $e^{3-5}$ i.e. $e^{prev~max - current~max}$
+To make a correction, we can use a correction factor $e^{3-5}$ i.e. $e^{\text{prev max} - \text{current~max}}$
 ```math
 \begin{align*}
     l_3 &= l_2 * e^{3-5} + e^{5-5}  \\
